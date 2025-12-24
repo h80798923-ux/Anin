@@ -1,4 +1,4 @@
-name: Build TrixieOS (Installer + VM Live)
+name: Build TrixieOS (Live + Installer)
 
 on:
   workflow_dispatch:
@@ -6,18 +6,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
+
     - name: Deps
       run: |
         sudo apt update
-        sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
-        squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \
-        wget git xz-utils lua5.3 dialog
+        sudo apt install -y xorriso squashfs-tools grub-pc-bin \
+        grub-efi-amd64-bin wget build-essential bc bison flex libssl-dev libelf-dev
 
-    # =====================
-    # KERNEL (VANILLA)
-    # =====================
+    # 1️⃣ VANILLA KERNEL
     - name: Build kernel
       run: |
         wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
@@ -25,87 +22,65 @@ jobs:
         cd linux-6.6.8
         make defconfig
         make -j$(nproc)
-        mkdir -p $GITHUB_WORKSPACE/rootfs/boot
-        make modules_install INSTALL_MOD_PATH=$GITHUB_WORKSPACE/rootfs
-        make install INSTALL_PATH=$GITHUB_WORKSPACE/rootfs/boot
+        mkdir -p ../kernel
+        make INSTALL_PATH=../kernel install
 
-    # =====================
-    # ROOTFS
-    # =====================
-    - name: Rootfs
+    # 2️⃣ ROOTFS (ALPINE MINIROOTFS = SADECE REPO + APK)
+    - name: RootFS
       run: |
-        mkdir -p rootfs/{bin,sbin,etc,proc,sys,usr,dev,run,tmp,home}
+        mkdir rootfs
+        wget https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
+        tar -xzf alpine-minirootfs-*.tar.gz -C rootfs
+
         echo 'NAME="TrixieOS"' > rootfs/etc/os-release
-        echo 'PRETTY_NAME="TrixieOS - ProjectA tarafından yapıldı"' >> rootfs/etc/os-release
+        echo 'PRETTY_NAME="TrixieOS ProjectA tarafından yapıldı"' >> rootfs/etc/os-release
+        echo 'ID=trixieos' >> rootfs/etc/os-release
 
-    # =====================
-    # APK-TOOLS (FIXED)
-    # =====================
-    - name: apk-tools
+    # 3️⃣ LXQT + PRA
+    - name: LXQt + PRA
       run: |
-        git clone https://git.alpinelinux.org/apk-tools
-        cd apk-tools
-        chmod +x src/genhelp.lua
-        make
-        make install DESTDIR=$GITHUB_WORKSPACE/rootfs
-        mkdir -p $GITHUB_WORKSPACE/rootfs/etc/apk
-        echo "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main" > rootfs/etc/apk/repositories
-        echo "https://dl-cdn.alpinelinux.org/alpine/latest-stable/community" >> rootfs/etc/apk/repositories
-        chmod 700 $GITHUB_WORKSPACE/rootfs/sbin/apk
+        chroot rootfs apk add lxqt openbox xorg-server mesa lightdm sudo
 
-    # =====================
-    # PRA (APK GİZLİ)
-    # =====================
-    - name: PRA
-      run: |
-        mkdir -p rootfs/usr/bin
-        cat <<'EOF' > rootfs/usr/bin/pra
-        #!/bin/sh
-        case "$1" in
-          install) apk add "$2" ;;
-          remove) apk del "$2" ;;
-          update) apk update ;;
-          search) apk search "$2" ;;
-          *) echo "pra install/remove/update/search" ;;
-        esac
-        EOF
+        echo '#!/bin/sh' > rootfs/usr/bin/pra
+        echo 'apk "$@"' >> rootfs/usr/bin/pra
         chmod +x rootfs/usr/bin/pra
+        chmod 700 rootfs/sbin/apk
 
-    # =====================
-    # LXQT
-    # =====================
-    - name: LXQt
+    # 4️⃣ INSTALLER
+    - name: Installer
       run: |
-        chroot rootfs apk add xorg-server mesa-dri-gallium \
-        lxqt openbox lightdm
+        cat << 'EOF' > rootfs/usr/bin/trixie-installer
+        #!/bin/sh
+        set -e
+        DISK=/dev/sda
+        mkfs.ext4 ${DISK}1
+        mount ${DISK}1 /mnt
+        cp -a / /mnt
+        grub-install $DISK
+        grub-mkconfig -o /mnt/boot/grub/grub.cfg
+        reboot
+        EOF
+        chmod +x rootfs/usr/bin/trixie-installer
 
-    # =====================
-    # SQUASHFS
-    # =====================
+    # 5️⃣ SQUASHFS
     - name: SquashFS
       run: |
         mkdir iso
         mksquashfs rootfs iso/rootfs.squashfs
 
-    # =====================
-    # ISO 1 – INSTALLER (PC)
-    # =====================
-    - name: Installer ISO
+    # 6️⃣ ISO 1 — LIVE + INSTALLER (GERÇEK PC)
+    - name: ISO Installer
       run: |
-        xorriso -as mkisofs -o TrixieOS-Installer.iso iso
+        grub-mkrescue -o TrixieOS-Installer.iso iso
 
-    # =====================
-    # ISO 2 – VM LIVE
-    # =====================
-    - name: VM ISO
+    # 7️⃣ ISO 2 — SADECE LIVE (VM)
+    - name: ISO VM
       run: |
-        xorriso -as mkisofs -o TrixieOS-VM.iso iso
+        rm rootfs/usr/bin/trixie-installer
+        mksquashfs rootfs iso/rootfs.squashfs -force
+        grub-mkrescue -o TrixieOS-VM.iso iso
 
-    # =====================
-    # UPLOAD
-    # =====================
-    - name: Upload
-      uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v4
       with:
         name: TrixieOS-ISOs
         path: |
