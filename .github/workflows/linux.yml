@@ -1,0 +1,113 @@
+name: Build TrixieOS (Buildroot + LXQt + Dual ISO)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          build-essential git wget rsync cpio unzip \
+          xorriso grub-pc-bin grub-efi-amd64-bin \
+          bc bison flex libssl-dev libelf-dev
+
+    # ===============================
+    # 1️⃣ BUILDROOT CLONE
+    # ===============================
+    - name: Clone Buildroot
+      run: |
+        git clone https://github.com/buildroot/buildroot.git
+        cd buildroot
+        git checkout 2024.02
+
+    # ===============================
+    # 2️⃣ KERNEL CONFIG (VANILLA)
+    # ===============================
+    - name: Kernel config
+      run: |
+        cd buildroot
+        make defconfig
+        sed -i 's/BR2_LINUX_KERNEL=y/BR2_LINUX_KERNEL=y/' .config
+        sed -i 's/# BR2_LINUX_KERNEL_CUSTOM_VERSION is not set/BR2_LINUX_KERNEL_CUSTOM_VERSION=y/' .config
+        sed -i 's/BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE=""/BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.6.8"/' .config
+
+    # ===============================
+    # 3️⃣ X11 + LXQT
+    # ===============================
+    - name: Enable LXQt (X11)
+      run: |
+        cd buildroot
+        echo 'BR2_PACKAGE_XORG7=y' >> .config
+        echo 'BR2_PACKAGE_LXQT=y' >> .config
+        echo 'BR2_PACKAGE_OPENBOX=y' >> .config
+        echo 'BR2_PACKAGE_LIGHTDM=y' >> .config
+
+    # ===============================
+    # 4️⃣ BRANDING
+    # ===============================
+    - name: Branding
+      run: |
+        cd buildroot
+        mkdir -p board/trixieos/rootfs-overlay/etc
+        cat <<EOF > board/trixieos/rootfs-overlay/etc/os-release
+        NAME="TrixieOS"
+        PRETTY_NAME="TrixieOS (ProjectA tarafından yapıldı)"
+        ID=trixieos
+        EOF
+
+        echo "TrixieOS - ProjectA tarafından yapıldı" \
+        > board/trixieos/rootfs-overlay/etc/issue
+
+    # ===============================
+    # 5️⃣ PKG MANAGER
+    # ===============================
+    - name: Add pkg command
+      run: |
+        cd buildroot
+        mkdir -p board/trixieos/rootfs-overlay/usr/bin
+        cat <<'EOF' > board/trixieos/rootfs-overlay/usr/bin/pkg
+        #!/bin/sh
+        echo "TrixieOS Package Manager"
+        echo "Buildroot sistem – runtime paket kurulmaz"
+        EOF
+        chmod +x board/trixieos/rootfs-overlay/usr/bin/pkg
+
+    # ===============================
+    # 6️⃣ BUILD SYSTEM
+    # ===============================
+    - name: Build TrixieOS
+      run: |
+        cd buildroot
+        make -j$(nproc)
+
+    # ===============================
+    # 7️⃣ ISO 1 – LIVE
+    # ===============================
+    - name: Create Live ISO
+      run: |
+        mkdir iso-live
+        cp buildroot/output/images/bzImage iso-live/
+        cp buildroot/output/images/rootfs.ext2 iso-live/
+        grub-mkrescue -o TrixieOS-Live.iso iso-live
+
+    # ===============================
+    # 8️⃣ ISO 2 – INSTALLER
+    # ===============================
+    - name: Create Installer ISO
+      run: |
+        mkdir iso-installer
+        cp buildroot/output/images/bzImage iso-installer/
+        cp buildroot/output/images/rootfs.ext2 iso-installer/
+        grub-mkrescue -o TrixieOS-Installer.iso iso-installer
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOS-ISOs
+        path: |
+          TrixieOS-Live.iso
+          TrixieOS-Installer.iso
