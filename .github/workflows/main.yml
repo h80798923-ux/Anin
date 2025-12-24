@@ -1,0 +1,113 @@
+name: Build TrixieOS (Installer + VM Live)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Deps
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
+        squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \
+        wget git xz-utils lua5.3 dialog
+
+    # =====================
+    # KERNEL (VANILLA)
+    # =====================
+    - name: Build kernel
+      run: |
+        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
+        tar -xf linux-6.6.8.tar.xz
+        cd linux-6.6.8
+        make defconfig
+        make -j$(nproc)
+        mkdir -p $GITHUB_WORKSPACE/rootfs/boot
+        make modules_install INSTALL_MOD_PATH=$GITHUB_WORKSPACE/rootfs
+        make install INSTALL_PATH=$GITHUB_WORKSPACE/rootfs/boot
+
+    # =====================
+    # ROOTFS
+    # =====================
+    - name: Rootfs
+      run: |
+        mkdir -p rootfs/{bin,sbin,etc,proc,sys,usr,dev,run,tmp,home}
+        echo 'NAME="TrixieOS"' > rootfs/etc/os-release
+        echo 'PRETTY_NAME="TrixieOS - ProjectA tarafından yapıldı"' >> rootfs/etc/os-release
+
+    # =====================
+    # APK-TOOLS (FIXED)
+    # =====================
+    - name: apk-tools
+      run: |
+        git clone https://git.alpinelinux.org/apk-tools
+        cd apk-tools
+        chmod +x src/genhelp.lua
+        make
+        make install DESTDIR=$GITHUB_WORKSPACE/rootfs
+        mkdir -p $GITHUB_WORKSPACE/rootfs/etc/apk
+        echo "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main" > rootfs/etc/apk/repositories
+        echo "https://dl-cdn.alpinelinux.org/alpine/latest-stable/community" >> rootfs/etc/apk/repositories
+        chmod 700 $GITHUB_WORKSPACE/rootfs/sbin/apk
+
+    # =====================
+    # PRA (APK GİZLİ)
+    # =====================
+    - name: PRA
+      run: |
+        mkdir -p rootfs/usr/bin
+        cat <<'EOF' > rootfs/usr/bin/pra
+        #!/bin/sh
+        case "$1" in
+          install) apk add "$2" ;;
+          remove) apk del "$2" ;;
+          update) apk update ;;
+          search) apk search "$2" ;;
+          *) echo "pra install/remove/update/search" ;;
+        esac
+        EOF
+        chmod +x rootfs/usr/bin/pra
+
+    # =====================
+    # LXQT
+    # =====================
+    - name: LXQt
+      run: |
+        chroot rootfs apk add xorg-server mesa-dri-gallium \
+        lxqt openbox lightdm
+
+    # =====================
+    # SQUASHFS
+    # =====================
+    - name: SquashFS
+      run: |
+        mkdir iso
+        mksquashfs rootfs iso/rootfs.squashfs
+
+    # =====================
+    # ISO 1 – INSTALLER (PC)
+    # =====================
+    - name: Installer ISO
+      run: |
+        xorriso -as mkisofs -o TrixieOS-Installer.iso iso
+
+    # =====================
+    # ISO 2 – VM LIVE
+    # =====================
+    - name: VM ISO
+      run: |
+        xorriso -as mkisofs -o TrixieOS-VM.iso iso
+
+    # =====================
+    # UPLOAD
+    # =====================
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrixieOS-ISOs
+        path: |
+          TrixieOS-Installer.iso
+          TrixieOS-VM.iso
