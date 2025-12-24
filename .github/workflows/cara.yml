@@ -1,4 +1,4 @@
-name: Build TrixieOS (Buildroot + LXQt)
+name: Build TrixieOS (Buildroot, Dual ISO)
 
 on:
   workflow_dispatch:
@@ -8,13 +8,13 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Install deps
+    - name: Deps
       run: |
         sudo apt update
         sudo apt install -y \
           build-essential bc bison flex libssl-dev libelf-dev \
-          xorriso grub-pc-bin grub-efi-amd64-bin \
-          wget git cpio rsync unzip python3
+          git rsync cpio unzip file \
+          xorriso grub-pc-bin grub-efi-amd64-bin
 
     - name: Clone Buildroot
       run: |
@@ -22,53 +22,106 @@ jobs:
         cd buildroot
         git checkout 2024.02
 
-    - name: Configure Buildroot (TrixieOS)
+    # -------- Kernel config (HATA OLMAMASI İÇİN ZORUNLU) --------
+    - name: Kernel defconfig
+      run: |
+        cd buildroot
+        mkdir -p board/trixieos/kernel
+        cat > board/trixieos/kernel/linux.config << 'EOF'
+        CONFIG_64BIT=y
+        CONFIG_X86_64=y
+        CONFIG_SMP=y
+        CONFIG_PREEMPT=y
+        CONFIG_HZ_250=y
+        CONFIG_BLK_DEV_INITRD=y
+        CONFIG_DEVTMPFS=y
+        CONFIG_DEVTMPFS_MOUNT=y
+        CONFIG_FB=y
+        CONFIG_DRM=y
+        CONFIG_DRM_I915=y
+        CONFIG_INPUT_EVDEV=y
+        CONFIG_VT=y
+        CONFIG_VT_CONSOLE=y
+        CONFIG_EXT4_FS=y
+        CONFIG_SQUASHFS=y
+        CONFIG_ISO9660_FS=y
+        CONFIG_EFI=y
+        CONFIG_EFI_STUB=y
+        EOF
+
+    # -------- Buildroot config --------
+    - name: Buildroot config
       run: |
         cd buildroot
         make defconfig
-
-        cat << 'EOF' >> .config
-        BR2_x86_64=y
-        BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
-
-        BR2_LINUX_KERNEL=y
-        BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-        BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.6.8"
-        BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
-        BR2_LINUX_KERNEL_DEFCONFIG="x86_64"
-
-        BR2_INIT_BUSYBOX=y
-
-        BR2_PACKAGE_XORG7=y
-        BR2_PACKAGE_XSERVER_XORG_SERVER=y
-        BR2_PACKAGE_XINIT=y
-        BR2_PACKAGE_LXQT=y
-        BR2_PACKAGE_OPENBOX=y
-        BR2_PACKAGE_LIGHTDM=y
-
-        BR2_PACKAGE_GRUB2=y
-
-        BR2_TARGET_GENERIC_HOSTNAME="TrixieOS"
-        BR2_TARGET_GENERIC_ISSUE="TrixieOS - ProjectA tarafından yapıldı"
-
-        BR2_TARGET_ROOTFS_ISO9660=y
-        BR2_TARGET_ROOTFS_ISO9660_VOLUME_ID="TrixieOS"
-        EOF
-
+        ./support/scripts/config \
+          --enable BR2_x86_64 \
+          --enable BR2_TOOLCHAIN_BUILDROOT_GLIBC \
+          --enable BR2_INIT_BUSYBOX \
+          --enable BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV \
+          --enable BR2_TARGET_GENERIC_GETTY \
+          --set-str BR2_TARGET_GENERIC_HOSTNAME "TrixieOS" \
+          --set-str BR2_TARGET_GENERIC_ISSUE "TrixieOS - ProjectA tarafından yapıldı" \
+          \
+          --enable BR2_LINUX_KERNEL \
+          --set-str BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE "board/trixieos/kernel/linux.config" \
+          \
+          --enable BR2_PACKAGE_XORG7 \
+          --enable BR2_PACKAGE_XSERVER_XORG_SERVER \
+          --enable BR2_PACKAGE_XINIT \
+          --enable BR2_PACKAGE_LXQT \
+          --enable BR2_PACKAGE_OPENBOX \
+          --enable BR2_PACKAGE_LIGHTDM \
+          \
+          --enable BR2_PACKAGE_GRUB2 \
+          --enable BR2_TARGET_ROOTFS_ISO9660 \
+          --set-str BR2_TARGET_ROOTFS_ISO9660_VOLUME_ID "TrixieOS"
         make olddefconfig
 
-    - name: Build TrixieOS
+    # -------- Installer script (ISO-1 için) --------
+    - name: Add installer
       run: |
         cd buildroot
-        make -j$(nproc)
+        mkdir -p overlay-installer/usr/bin overlay-installer/etc
+        cat > overlay-installer/usr/bin/trixie-installer << 'EOF'
+        #!/bin/sh
+        set -e
+        DISK=/dev/sda
+        echo "TrixieOS Installer"
+        wipefs -a $DISK
+        parted -s $DISK mklabel msdos
+        parted -s $DISK mkpart primary ext4 1MiB 100%
+        mkfs.ext4 ${DISK}1
+        mount ${DISK}1 /mnt
+        cp -a /target/* /mnt/
+        grub-install --boot-directory=/mnt/boot $DISK
+        chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+        umount -R /mnt
+        reboot
+        EOF
+        chmod +x overlay-installer/usr/bin/trixie-installer
 
-    - name: Rename ISO
+    # -------- Build ISO with installer --------
+    - name: Build ISO (Installer)
       run: |
-        cd buildroot/output/images
-        mv rootfs.iso9660 TrixieOS.iso
+        cd buildroot
+        echo 'BR2_ROOTFS_OVERLAY="overlay-installer"' >> .config
+        make olddefconfig
+        make -j$(nproc)
+        cp output/images/rootfs.iso9660 TrixieOS-Installer.iso
 
-    - name: Upload ISO
-      uses: actions/upload-artifact@v4
+    # -------- Build ISO without installer (VM Live) --------
+    - name: Build ISO (VM Live)
+      run: |
+        cd buildroot
+        sed -i 's|BR2_ROOTFS_OVERLAY="overlay-installer"|# BR2_ROOTFS_OVERLAY is not set|' .config
+        make olddefconfig
+        make -j$(nproc)
+        cp output/images/rootfs.iso9660 TrixieOS-VM.iso
+
+    - uses: actions/upload-artifact@v4
       with:
-        name: TrixieOS-ISO
-        path: buildroot/output/images/TrixieOS.iso
+        name: TrixieOS-ISOs
+        path: |
+          TrixieOS-Installer.iso
+          TrixieOS-VM.iso
