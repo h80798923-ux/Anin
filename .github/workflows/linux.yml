@@ -1,4 +1,4 @@
-name: Build TrixieOS (Buildroot + LXQt + Dual ISO)
+name: Build TrixieOS (Buildroot + LXQt)
 
 on:
   workflow_dispatch:
@@ -8,106 +8,57 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Install dependencies
+    - name: Install deps
       run: |
         sudo apt update
         sudo apt install -y \
-          build-essential git wget rsync cpio unzip \
-          xorriso grub-pc-bin grub-efi-amd64-bin \
-          bc bison flex libssl-dev libelf-dev
+          build-essential git wget cpio unzip rsync \
+          bc bison flex libssl-dev libelf-dev \
+          xorriso grub-pc-bin grub-efi-amd64-bin
 
-    # ===============================
-    # 1️⃣ BUILDROOT CLONE
-    # ===============================
     - name: Clone Buildroot
       run: |
         git clone https://github.com/buildroot/buildroot.git
         cd buildroot
         git checkout 2024.02
 
-    # ===============================
-    # 2️⃣ KERNEL CONFIG (VANILLA)
-    # ===============================
-    - name: Kernel config
+    - name: Configure Buildroot
       run: |
         cd buildroot
-        make defconfig
-        sed -i 's/BR2_LINUX_KERNEL=y/BR2_LINUX_KERNEL=y/' .config
-        sed -i 's/# BR2_LINUX_KERNEL_CUSTOM_VERSION is not set/BR2_LINUX_KERNEL_CUSTOM_VERSION=y/' .config
-        sed -i 's/BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE=""/BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.6.8"/' .config
+        make qemu_x86_64_defconfig
 
-    # ===============================
-    # 3️⃣ X11 + LXQT
-    # ===============================
-    - name: Enable LXQt (X11)
-      run: |
-        cd buildroot
-        echo 'BR2_PACKAGE_XORG7=y' >> .config
-        echo 'BR2_PACKAGE_LXQT=y' >> .config
-        echo 'BR2_PACKAGE_OPENBOX=y' >> .config
-        echo 'BR2_PACKAGE_LIGHTDM=y' >> .config
+        ./scripts/config \
+          --enable BR2_x86_64 \
+          --enable BR2_TOOLCHAIN_BUILDROOT_GLIBC \
+          --enable BR2_LINUX_KERNEL \
+          --enable BR2_LINUX_KERNEL_CUSTOM_VERSION \
+          --set-str BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE "6.6.8" \
+          --enable BR2_PACKAGE_XORG7 \
+          --enable BR2_PACKAGE_LXQT \
+          --enable BR2_PACKAGE_MATCHBOX \
+          --enable BR2_TARGET_ROOTFS_SQUASHFS
 
-    # ===============================
-    # 4️⃣ BRANDING
-    # ===============================
-    - name: Branding
-      run: |
-        cd buildroot
-        mkdir -p board/trixieos/rootfs-overlay/etc
-        cat <<EOF > board/trixieos/rootfs-overlay/etc/os-release
-        NAME="TrixieOS"
-        PRETTY_NAME="TrixieOS (ProjectA tarafından yapıldı)"
-        ID=trixieos
-        EOF
+        make olddefconfig
 
-        echo "TrixieOS - ProjectA tarafından yapıldı" \
-        > board/trixieos/rootfs-overlay/etc/issue
-
-    # ===============================
-    # 5️⃣ PKG MANAGER
-    # ===============================
-    - name: Add pkg command
-      run: |
-        cd buildroot
-        mkdir -p board/trixieos/rootfs-overlay/usr/bin
-        cat <<'EOF' > board/trixieos/rootfs-overlay/usr/bin/pkg
-        #!/bin/sh
-        echo "TrixieOS Package Manager"
-        echo "Buildroot sistem – runtime paket kurulmaz"
-        EOF
-        chmod +x board/trixieos/rootfs-overlay/usr/bin/pkg
-
-    # ===============================
-    # 6️⃣ BUILD SYSTEM
-    # ===============================
     - name: Build TrixieOS
       run: |
         cd buildroot
         make -j$(nproc)
 
-    # ===============================
-    # 7️⃣ ISO 1 – LIVE
-    # ===============================
-    - name: Create Live ISO
+    - name: Create ISO
       run: |
-        mkdir iso-live
-        cp buildroot/output/images/bzImage iso-live/
-        cp buildroot/output/images/rootfs.ext2 iso-live/
-        grub-mkrescue -o TrixieOS-Live.iso iso-live
+        mkdir iso
+        cp buildroot/output/images/bzImage iso/vmlinuz
+        cp buildroot/output/images/rootfs.squashfs iso/rootfs.squashfs
 
-    # ===============================
-    # 8️⃣ ISO 2 – INSTALLER
-    # ===============================
-    - name: Create Installer ISO
-      run: |
-        mkdir iso-installer
-        cp buildroot/output/images/bzImage iso-installer/
-        cp buildroot/output/images/rootfs.ext2 iso-installer/
-        grub-mkrescue -o TrixieOS-Installer.iso iso-installer
+        echo 'set timeout=3
+        menuentry "TrixieOS (ProjectA tarafından yapıldı)" {
+          linux /vmlinuz quiet
+        }' > iso/grub.cfg
+
+        grub-mkrescue -o TrixieOS.iso iso
 
     - uses: actions/upload-artifact@v4
       with:
-        name: TrixieOS-ISOs
-        path: |
-          TrixieOS-Live.iso
-          TrixieOS-Installer.iso
+        name: TrixieOS
+        path: TrixieOS.iso
